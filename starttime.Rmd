@@ -1,0 +1,936 @@
+## citaAggregate data, spring 2025 - Annoterad!
+
+Ladda in data och räkna ut starttime för kiruna vår 2025
+
+```{r setup, include=FALSE}
+library(dplyr) # for data handling
+library(tidyr)  # for datan handling
+library(car) # for levene's test
+library(lubridate) # for date handling
+library(ggpubr)
+library(ggplot2) # for plotting
+library(getRad) # radar data
+library(bioRad) # radar data handling
+library(suntools) # Solar position
+library(moonlit) # moon illumination
+library(mblm) # Kendall
+library(DHARMa) #checking residuals 
+library(rstatix) # effect sizes
+library(coin) # effect sizes
+
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen=999)
+
+# Set to local timezone for sunset/sunrise() to work properly and not get sunsets occurring on the wrong (UTC) date
+tz = "UTC"
+
+# Set location Kiruna (sekrn)
+lat<-67.70875
+lon<-20.61779
+```
+
+# Night length
+
+```{r night length}
+# Done per year to not get duplicate night of year (noy). Note location specific!
+
+## 2025
+# gör en dataframe med alla datum
+dates2025<-as.data.frame(seq(as.POSIXct("2025-01-01"), as.POSIXct("2025-12-31"), by = "days"))
+colnames(dates2025)<-"date" # döp om columnen
+
+#Räkna ut nattlängd för varje datum
+dates2025 %>%
+  mutate(noy = noy(date, lat = lat, lon = lon)) %>% # lägg till column med natt nr
+  rowwise() %>% # anger att efter detta titta bara på varje rad för sig
+  mutate(sunrise = bioRad::sunrise(date, tz = tz, lon, lat))%>% # räkna ut och lägg till kolumn med soluppgång
+  mutate(sunset = bioRad::sunset(date, tz = tz, lon, lat)) %>% # räkna ut och lägg till kolumn med solnedgång
+  mutate(next_sunrise = bioRad::sunrise(date+86400, tz = tz, lon, lat))%>% # räkna ut och lägg till kolumn med nästa soluppgång
+  mutate(night_length = as.numeric(interval(sunset, next_sunrise) / minutes(1)))->night_length_2025 # räkna ut och lägg till kolumn tiden från solnedgång till nästa soluppgång.
+
+## 2024
+# gör en dataframe med alla datum
+dates2024<-as.data.frame(seq(as.POSIXct("2024-01-01"), as.POSIXct("2024-12-31"), by = "days"))
+colnames(dates2024)<-"date"
+
+#Räkna ut nattlängd för varje datum
+dates2024 %>%
+  mutate(noy = noy(date, lat = lat, lon = lon)) %>% 
+  rowwise() %>% 
+  mutate(sunrise = bioRad::sunrise(date, tz = tz, lon, lat))%>%
+  mutate(sunset = bioRad::sunset(date, tz = tz, lon, lat)) %>%
+  mutate(next_sunrise = bioRad::sunrise(date+86400, tz = tz, lon, lat))%>% 
+  mutate(night_length = as.numeric(interval(sunset, next_sunrise) / minutes(1)))->night_length_2024
+
+## 2023
+# gör en dataframe med alla datum
+dates2023<-as.data.frame(seq(as.POSIXct("2023-01-01"), as.POSIXct("2023-12-31"), by = "days"))
+colnames(dates2023)<-"date"
+
+#Räkna ut nattlängd för varje datum
+dates2023 %>%
+  mutate(noy = noy(date, lat = lat, lon = lon)) %>% 
+  rowwise() %>% 
+  mutate(sunrise = bioRad::sunrise(date, tz = tz, lon, lat))%>%
+  mutate(sunset = bioRad::sunset(date, tz = tz, lon, lat)) %>%
+  mutate(next_sunrise = bioRad::sunrise(date+86400, tz = tz, lon, lat))%>% 
+  mutate(night_length = as.numeric(interval(sunset, next_sunrise) / minutes(1)))->night_length_2023
+
+
+```
+
+# Kiruna
+
+## Kiruna spring 2025
+
+```{r sekrn spring 2025}
+# ladda data
+sekrn_2025spring <- read.csv(file= "sekrn_2025spring.csv", header=TRUE,stringsAsFactors = FALSE)
+
+# aggregera över höjd
+sekrn_2025spring %>%
+  filter(gap == 0) %>% # filtera bort data som inte är komplett
+  mutate(mtr = (ff * 3.6 * dens / 5)) %>% # räkna ut MTR och lägg till som kolumn "MTR"
+  mutate(datetime = as.POSIXct(datetime, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC")) %>% # gör kolumnen "datetime" till datumn format
+  mutate(previous_sunset = bioRad::sunset(datetime-86400, tz = "UTC", radar_longitude, radar_latitude)) %>% 
+  group_by(datetime) %>% # gruppera på tidpunkt för att summera alla höjder
+      summarize(
+          radar = radar[1]
+        , mtr = sum(mtr)
+        , sum_dens = sum(dens, na.rm = TRUE)
+        , lat = radar_latitude[1]
+        , lon = radar_longitude[1]
+        , height_antenna = radar_height[1]
+        , day = day[1]
+        , sunrise = sunrise[1]
+        , sunset = sunset[1] 
+        , previous_sunset = previous_sunset[1]) %>% 
+  ungroup() %>% 
+  mutate(noy = noy(datetime, lat = lat, lon = lon)) %>% # lägg till column med natt nr
+  mutate(dmtr = mtr - lag(mtr)) %>% #räkna ut skillnaden i MTR till föregående
+  mutate(pos_dmtr = dmtr > 0) %>% # gör en variabel som säger när skillnaden är positiv (TRUE)
+  mutate(run = with(rle(pos_dmtr), rep(lengths >= 4 & values, lengths))) %>% #identifera "runs" av 4 eller mer positiva
+  filter(run == TRUE) %>% #filtrera ut "runs"
+  group_by(noy) %>%  # gruppera per natt nr
+  slice(1) %>% # välj den första varje natt
+  mutate(time_to_sunset =
+    ifelse (hour(datetime)>12, 
+      as.numeric(interval(sunset, datetime) / minutes(1)),
+       as.numeric(interval(previous_sunset, datetime) / minutes(1))))-> sekrn_2025spring_time 
+```
+
+```{r night length spring 2025}
+sekrn_2025spring_night <- merge(night_length_2025, sekrn_2025spring_time, by = "noy", all = FALSE)
+```
+
+## Kiruna spring 2023
+
+```{r}
+sekrn_2023spring <- read.csv(file= "sekrn_2023spring.csv", header=TRUE,stringsAsFactors = FALSE)
+
+## These vpts's from aloft do not contain "sunset", "sunrise" and "day", so that is added below
+sekrn_2023spring %>%
+  filter(gap == 0) %>% 
+  mutate(mtr = (ff * 3.6 * dens / 5)) %>% # räkna ut MTR och lägg till som kolumn "MTR"
+  mutate(datetime = as.POSIXct(datetime, format = "%Y-%m-%d %H:%M:%OS")) %>%
+  group_by(datetime) %>%
+      summarize(
+          radar = radar[1]
+        , mtr = sum(mtr)
+        , sum_dens = sum(dens, na.rm = TRUE)
+        , lat = radar_latitude[1]
+        , lon = radar_longitude[1]
+        , datetime = datetime[1])%>% 
+  ungroup() %>%
+  mutate(sunset = bioRad::sunset(datetime, tz = "UTC", lon, lat)) %>%
+  mutate(sunrise = bioRad::sunrise(datetime, tz = "UTC", lon, lat)) %>%
+  mutate(day = if_else(datetime>sunrise & datetime<sunset, TRUE, FALSE, missing = TRUE)) %>% # note missing set to TRUE to account for midnight sun conditions, so won't work during winter
+ # note missing set to TRUE to account for midnight sun conditions, so won't work during winter
+  mutate(previous_sunset = bioRad::sunset(datetime-86400, tz = "UTC", lon, lat)) %>% 
+  mutate(noy = noy(datetime, lat = lat, lon = lon)) %>% # lägg till column med natt nr
+  mutate(dmtr = mtr - lag(mtr)) %>% #räkna ut skillnaden i MTR till föregående
+  mutate(pos_dmtr = dmtr > 0) %>% # gör en variabel som säger när skillnaden är positiv (TRUE)
+  mutate(run = with(rle(pos_dmtr), rep(lengths >= 4 & values, lengths))) %>% #identifera "runs" av 4 eller mer positiva
+  filter(run == TRUE) %>% #filtrera ut "runs"
+  group_by(noy) %>%  # gruppera per natt nr
+  slice(1) %>% # välj den första varje natt
+  mutate(time_to_sunset =
+    ifelse (hour(datetime)>12, 
+      as.numeric(interval(sunset, datetime) / minutes(1)),
+       as.numeric(interval(previous_sunset, datetime) / minutes(1)))) ->sekrn_2023spring_time 
+
+## Currently contains NAs in night/day sums. Some are ok (missing data), but some night NA's are due to midnight light.
+```
+
+```{r night length spring 2023}
+sekrn_2023spring_night <- merge(night_length_2023, sekrn_2023spring_time, by = "noy", all = FALSE)
+```
+
+## Kiruna fall 2023
+
+```{r fall 2023}
+# ladda data
+sekrn_2023fall <- read.csv(file= "sekrn_2023fall.csv", header=TRUE,stringsAsFactors = FALSE)
+
+# aggregera över höjd
+sekrn_2023fall %>%
+  filter(gap == 0) %>% # filtera bort data som inte är komplett
+  mutate(mtr = (ff * 3.6 * dens / 5)) %>% # räkna ut MTR och lägg till som kolumn "MTR"
+  mutate(datetime = as.POSIXct(datetime, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC")) %>% # gör kolumnen "datetime" till datumn format
+  mutate(previous_sunset = bioRad::sunset(datetime-86400, tz = "UTC", radar_longitude, radar_latitude)) %>% 
+  group_by(datetime) %>% # gruppera på tidpunkt för att summera alla höjder
+      summarize(
+          radar = radar[1]
+        , mtr = sum(mtr)
+        , sum_dens = sum(dens, na.rm = TRUE)
+        , lat = radar_latitude[1]
+        , lon = radar_longitude[1]
+        , height_antenna = radar_height[1]
+        , day = day[1]
+        , sunrise = sunrise[1]
+        , sunset = sunset[1] 
+        , previous_sunset = previous_sunset[1]) %>% 
+  ungroup() %>% 
+  mutate(noy = noy(datetime, lat = lat, lon = lon)) %>% # lägg till column med natt nr
+  mutate(dmtr = mtr - lag(mtr)) %>% #räkna ut skillnaden i MTR till föregående
+  mutate(pos_dmtr = dmtr > 0) %>% # gör en variabel som säger när skillnaden är positiv (TRUE)
+  mutate(run = with(rle(pos_dmtr), rep(lengths >= 4 & values, lengths))) %>% #identifera "runs" av 4 eller mer positiva
+  filter(run == TRUE) %>% #filtrera ut "runs"
+  group_by(noy) %>%  # gruppera per natt nr
+  slice(1) %>% # välj den första varje natt
+  mutate(time_to_sunset =
+    ifelse (hour(datetime)>12, 
+      as.numeric(interval(sunset, datetime) / minutes(1)),
+       as.numeric(interval(previous_sunset, datetime) / minutes(1))))-> sekrn_2023fall_time
+```
+
+```{r night length fall 2023}
+sekrn_2023fall_night <- merge(night_length_2023, sekrn_2023fall_time, by = "noy", all = FALSE)
+```
+
+## Kiruna fall 2024
+
+```{r fall 2024}
+# ladda data
+sekrn_2024fall <- read.csv(file= "sekrn_2024fall.csv", header=TRUE,stringsAsFactors = FALSE)
+
+# aggregera över höjd
+sekrn_2024fall %>%
+  filter(gap == 0) %>% # filtera bort data som inte är komplett
+  mutate(mtr = (ff * 3.6 * dens / 5)) %>% # räkna ut MTR och lägg till som kolumn "MTR"
+  mutate(datetime = as.POSIXct(datetime, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC")) %>% # gör kolumnen "datetime" till datumn format
+  mutate(previous_sunset = bioRad::sunset(datetime-86400, tz = "UTC", radar_longitude, radar_latitude)) %>% 
+  group_by(datetime) %>% # gruppera på tidpunkt för att summera alla höjder
+      summarize(
+          radar = radar[1]
+        , mtr = sum(mtr)
+        , sum_dens = sum(dens, na.rm = TRUE)
+        , lat = radar_latitude[1]
+        , lon = radar_longitude[1]
+        , height_antenna = radar_height[1]
+        , day = day[1]
+        , sunrise = sunrise[1]
+        , sunset = sunset[1] 
+        , previous_sunset = previous_sunset[1]) %>% 
+  ungroup() %>% 
+  mutate(noy = noy(datetime, lat = lat, lon = lon)) %>% # lägg till column med natt nr
+  mutate(dmtr = mtr - lag(mtr)) %>% #räkna ut skillnaden i MTR till föregående
+  mutate(pos_dmtr = dmtr > 0) %>% # gör en variabel som säger när skillnaden är positiv (TRUE)
+  mutate(run = with(rle(pos_dmtr), rep(lengths >= 4 & values, lengths))) %>% #identifera "runs" av 4 eller mer positiva
+  filter(run == TRUE) %>% #filtrera ut "runs"
+  group_by(noy) %>%  # gruppera per natt nr
+  slice(1) %>% # välj den första varje natt
+  mutate(time_to_sunset =
+    ifelse (hour(datetime)>12, 
+      as.numeric(interval(sunset, datetime) / minutes(1)),
+       as.numeric(interval(previous_sunset, datetime) / minutes(1))))-> sekrn_2024fall_time
+```
+
+```{r night length fall 2024}
+sekrn_2024fall_night <- merge(night_length_2024, sekrn_2024fall_time, by = "noy", all = FALSE)
+```
+
+# Karlskrona
+
+```{r night length 2023 sekaa}
+## 2023
+# gör en dataframe med alla datum
+dates2023<-as.data.frame(seq(as.POSIXct("2023-01-01"), as.POSIXct("2023-12-31"), by = "days"))
+colnames(dates2023)<-"date"
+
+#Räkna ut nattlängd för varje datum
+dates2023 %>%
+  mutate(noy = noy(date, lat = 56.29554, lon = 15.61022)) %>% 
+  rowwise() %>% 
+  mutate(sunrise = bioRad::sunrise(date, tz = tz, lon = 15.61022, lat = 56.29554))%>%
+  mutate(sunset = bioRad::sunset(date, tz = tz, lon = 15.61022, lat = 56.29554)) %>%
+  mutate(next_sunrise = bioRad::sunrise(date+86400, tz = tz, lon = 15.61022, lat = 56.29554))%>% 
+  mutate(night_length = as.numeric(interval(sunset, next_sunrise) / minutes(1)))->night_length_2023_sekaa
+```
+
+## Karlskrona spring 2023
+
+```{r spring 2023}
+# ladda data
+sekaa_2023spring <- read.csv(file= "sekaa_2023spring.csv", header=TRUE,stringsAsFactors = FALSE)
+
+# aggregera över höjd
+sekaa_2023spring %>%
+  filter(gap == 0) %>% # filtera bort data som inte är komplett
+  mutate(mtr = (ff * 3.6 * dens / 5)) %>% # räkna ut MTR och lägg till som kolumn "MTR"
+  mutate(datetime = as.POSIXct(datetime, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC")) %>% # gör kolumnen "datetime" till datumn format
+  mutate(previous_sunset = bioRad::sunset(datetime-86400, tz = "UTC", radar_longitude, radar_latitude)) %>% 
+  group_by(datetime) %>% # gruppera på tidpunkt för att summera alla höjder
+      summarize(
+          radar = radar[1]
+        , mtr = sum(mtr)
+        , sum_dens = sum(dens, na.rm = TRUE)
+        , lat = radar_latitude[1]
+        , lon = radar_longitude[1]
+        , height_antenna = radar_height[1]
+        , day = day[1]
+        , sunrise = sunrise[1]
+        , sunset = sunset[1] 
+        , previous_sunset = previous_sunset[1]) %>% 
+  ungroup() %>% 
+  mutate(noy = noy(datetime, lat = lat, lon = lon)) %>% # lägg till column med natt nr
+  mutate(dmtr = mtr - lag(mtr)) %>% #räkna ut skillnaden i MTR till föregående
+  mutate(pos_dmtr = dmtr > 0) %>% # gör en variabel som säger när skillnaden är positiv (TRUE)
+  mutate(run = with(rle(pos_dmtr), rep(lengths >= 4 & values, lengths))) %>% #identifera "runs" av 4 eller mer positiva
+  filter(run == TRUE) %>% #filtrera ut "runs"
+  group_by(noy) %>%  # gruppera per natt nr
+  slice(1) %>% # välj den första varje natt
+  mutate(time_to_sunset =
+    ifelse (hour(datetime)>12, 
+      as.numeric(interval(sunset, datetime) / minutes(1)),
+       as.numeric(interval(previous_sunset, datetime) / minutes(1)))) -> sekaa_2023spring_time
+```
+
+```{r night length spring 2023}
+sekaa_2023spring_night <- merge(night_length_2023_sekaa, sekaa_2023spring_time, by = "noy", all = FALSE)
+```
+
+## Karlskrona fall 2023
+
+```{r fall 2023}
+# ladda data
+sekaa_2023fall <- read.csv(file= "sekaa_2023fall.csv", header=TRUE,stringsAsFactors = FALSE)
+
+# aggregera över höjd
+sekaa_2023fall %>%
+  filter(gap == 0) %>% # filtera bort data som inte är komplett
+  mutate(mtr = (ff * 3.6 * dens / 5)) %>% # räkna ut MTR och lägg till som kolumn "MTR"
+  mutate(datetime = as.POSIXct(datetime, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC")) %>% # gör kolumnen "datetime" till datumn format
+  mutate(previous_sunset = bioRad::sunset(datetime-86400, tz = "UTC", radar_longitude, radar_latitude)) %>% 
+  group_by(datetime) %>% # gruppera på tidpunkt för att summera alla höjder
+      summarize(
+          radar = radar[1]
+        , mtr = sum(mtr)
+        , sum_dens = sum(dens, na.rm = TRUE)
+        , lat = radar_latitude[1]
+        , lon = radar_longitude[1]
+        , height_antenna = radar_height[1]
+        , day = day[1]
+        , sunrise = sunrise[1]
+        , sunset = sunset[1] 
+        , previous_sunset = previous_sunset[1]) %>% 
+  ungroup() %>% 
+  mutate(noy = noy(datetime, lat = lat, lon = lon)) %>% # lägg till column med natt nr
+  mutate(dmtr = mtr - lag(mtr)) %>% #räkna ut skillnaden i MTR till föregående
+  mutate(pos_dmtr = dmtr > 0) %>% # gör en variabel som säger när skillnaden är positiv (TRUE)
+  mutate(run = with(rle(pos_dmtr), rep(lengths >= 4 & values, lengths))) %>% #identifera "runs" av 4 eller mer positiva
+  filter(run == TRUE) %>% #filtrera ut "runs"
+  group_by(noy) %>%  # gruppera per natt nr
+  slice(1) %>% # välj den första varje natt
+  mutate(time_to_sunset =
+    ifelse (hour(datetime)>12, 
+      as.numeric(interval(sunset, datetime) / minutes(1)),
+       as.numeric(interval(previous_sunset, datetime) / minutes(1)))) -> sekaa_2023fall_time
+```
+
+```{r}
+sekaa_2023fall_night <- merge(night_length_2023, sekaa_2023fall_time, by = "noy", all = FALSE)
+```
+
+# Full table
+
+```{r}
+sekrn_2025spring %>%
+  filter(datetime == 2025-05-01) -> sekrn_date
+```
+
+```{r plot starttimes}
+
+plot(integrate_profile(as.vpts(sekrn_2025spring)), quantity = "mtr") #plotta med biorad funktion för vpts
+abline(v=as.POSIXct(sekrn_2025spring_time$datetime), col = "red")
+
+```
+
+```{r spring summary}
+spring_sum_night <- merge(sekaa_2023spring_night, merge(sekrn_2023spring_night, sekrn_2025spring_night, all = TRUE), all = TRUE)
+```
+
+```{r fall summary}
+fall_sum_night <- merge(sekaa_2023fall_night, merge(sekrn_2024fall_night, sekrn_2023fall_night, all = TRUE), all = TRUE)
+```
+
+```{r seasons summary}
+season_sum <- merge(spring_sum_night, fall_sum_night, all = TRUE) 
+
+season_sum %>% 
+  mutate(season =
+           case_when(
+             noy < 180 ~ "spring",
+             .default = "fall"
+           )
+         )  %>%
+  filter(time_to_sunset >= -60 & time_to_sunset <= night_length + 60 
+  ) %>%
+  mutate(
+    solarpos = solarpos(
+      cbind(lon, lat),
+      as.POSIXct(datetime, tz = "UTC") # Behövde tydligen definieras
+    )) %>%
+  mutate(
+    period = 
+           case_when(
+             solarpos[, 2] > 0 ~ "day",
+             solarpos[, 2] > -6 &  solarpos[, 2] < 0 ~ "civil twilight",
+             solarpos[, 2] > -12 &  solarpos[, 2] < -6 ~ "nautical twilight",
+             solarpos[, 2] > -18 &  solarpos[, 2] < -12 ~ "astronomical twilight",
+             .default = "night"
+           )) -> all_seasons
+```
+
+```{r moonlight}
+ illumination = calculateMoonlightIntensity(
+      all_seasons$lat,
+      all_seasons$lon,
+      date = as.POSIXct(all_seasons$datetime, tz ="UTC"),
+      e = 0.24) 
+rename(illumination, datetime = date) -> illumination_new
+ 
+merge(all_seasons, illumination_new, by = "datetime", all = TRUE) -> season_filter
+```
+
+# Stats
+
+### Descriptive stats
+
+```{r}
+season_filter %>% group_by(radar, season,.drop = FALSE) %>% count() %>%
+  ungroup()
+```
+
+```{r fequencies}
+season_filter %>% group_by(radar, period,.drop = FALSE) %>% count() %>%
+  ungroup()
+```
+
+```{r}
+season_filter %>% filter(moonlightModel == 0) %>% count()
+```
+
+```{r means season}
+season_filter %>%
+  group_by(season, radar) %>%
+  summarise(
+    mean = mean(time_to_sunset),
+    sd = sd(time_to_sunset),
+    median = median(time_to_sunset)
+  )%>%
+ungroup()
+```
+
+```{r means latitude}
+season_filter %>%
+  group_by(radar) %>%
+  summarise(
+    mean = mean(time_to_sunset),
+    sd = sd(time_to_sunset),
+    median = median(time_to_sunset)
+  ) %>%
+ungroup()
+```
+
+```{r night length}
+season_filter %>%
+  summarise(
+    mean = mean(moonlightModel),
+    sd = sd(moonlightModel),
+    min = min(moonlightModel),
+    max = max(moonlightModel))
+```
+
+```{r night length}
+season_filter %>%
+  summarise(
+    mean = mean(night_length),
+    sd = sd(night_length),
+    min = min(night_length),
+    max = max(night_length))
+```
+
+## Seasonal comparison
+
+```{r}
+#Spring histogram
+season_filter %>% 
+  filter(season == "spring") -> spring_season
+ggplot(data = spring_season, aes(x = time_to_sunset )) + 
+  geom_histogram(binwidth = 5) +
+  labs(title = "Histogram of departure time spring", x = "Departure time", y = "Count")
+
+#Normality test
+shapiro.test(spring_season$time_to_sunset)
+#Not normal W = 0.71758, p-value = 0.00001268
+```
+
+```{r QQ-plot spring}
+qqPlot(spring_season$time_to_sunset)
+```
+
+```{r}
+#Fall histogram
+season_filter %>% 
+  filter(season == "fall") -> fall_season
+ggplot(data = fall_season, aes(x = time_to_sunset )) + 
+  geom_histogram(binwidth = 5) +
+  labs(title = "Histogram of departure time fall", x = "Departure time", y = "Count")
+
+#Normality test
+shapiro.test(fall_season$time_to_sunset)
+#Not normal W = 0.80697, p-value = 0.0000000001806
+```
+
+```{r QQ-plot fall}
+qqPlot(fall_season$time_to_sunset)
+```
+
+```{r equal variances}
+leveneTest(time_to_sunset ~ season, season_filter)
+#Levene's Test for Homogeneity of Variance (center = median)
+#       Df F value  Pr(>F)  
+#group   1  3.4488 0.06558 .
+#      129                  
+#Equal variances can be assumed
+```
+
+```{r stats}
+season_filter %>%
+  group_by(season) %>%
+  summarise( 
+    mean = mean(time_to_sunset),
+    sd = sd(time_to_sunset),
+    median = median(time_to_sunset)
+  ) %>%
+ungroup()
+#season  mean    sd
+#  <chr>  <dbl> <dbl>
+#1 fall    240.  299.
+#2 spring  216.  559.
+```
+
+```{r wilcox test}
+wilcox <- wilcox.test(fall_season$time_to_sunset, spring_season$time_to_sunset, paired = FALSE, var.equal = TRUE, alternative = "greater", conf.int = TRUE, conf.level = 0.95)
+print(wilcox)
+
+#Wilcoxon rank sum test with continuity correction
+#data:  spring_sum_night$time_to_sunset and fall_sum_night$time_to_sunset
+#W = 917, p-value = 0.008499**
+#alternative hypothesis: true location shift is less than 0
+#Significant difference between seasons!
+```
+
+```{r effect size}
+wilcox_effsize(data = season_filter, time_to_sunset~season)
+```
+
+#### Separate comparison
+
+```{r spring sekrn}
+season_filter %>%
+  filter(radar == "sekrn" & season == "spring") -> spring_sekrn
+qqPlot(spring_sekrn$time_to_sunset)
+```
+
+```{r fall sekrn}
+season_filter %>%
+  filter(radar == "sekrn" & season == "fall") -> fall_sekrn
+qqPlot(fall_sekrn$time_to_sunset)
+```
+
+```{r spring sekaa}
+season_filter %>%
+  filter(radar == "sekaa" & season == "spring") -> spring_sekaa
+qqPlot(spring_sekaa$time_to_sunset)
+```
+
+```{r fall sekaa}
+season_filter %>%
+  filter(radar == "sekaa" & season == "fall") -> fall_sekaa
+qqPlot(fall_sekaa$time_to_sunset)
+```
+
+```{r}
+season_filter %>%
+  filter(radar == "sekrn") -> sekrn
+leveneTest(time_to_sunset ~ season, sekrn)
+```
+
+```{r levene's test}
+season_filter %>%
+  filter(radar == "sekaa") -> sekaa
+leveneTest(time_to_sunset ~ season, sekaa)
+```
+
+```{r sekrn wilcox}
+wilcox_sekrn <- wilcox.test(fall_sekrn$time_to_sunset, spring_sekrn$time_to_sunset, paired = FALSE, var.equal = TRUE, alternative = "greater", conf.int = TRUE, conf.level = 0.95)
+print(wilcox_sekrn)
+```
+
+```{r sekaa wilcox}
+wilcox_sekaa <- wilcox.test(fall_sekaa$time_to_sunset, spring_sekaa$time_to_sunset, paired = FALSE, var.equal = TRUE, alternative = "greater", conf.int = TRUE, conf.level = 0.95)
+print(wilcox_sekaa)
+```
+
+```{r}
+ggplot(data = season_filter, aes(x = radar, y = time_to_sunset, fill = season)) +
+  stat_boxplot(geom = "errorbar", width = 0.20, position = position_dodge(.75)) +
+  geom_boxplot() +
+  labs(title = "Departure time by radar and season", x = "Radar", y = "Departure time (min)", fill = "Season")
+```
+
+```{r sekaa effect size}
+wilcox_effsize(data = sekaa, time_to_sunset~season)
+```
+
+```{r sekrn effect size}
+wilcox_effsize(data = sekrn, time_to_sunset~season)
+```
+
+## Latitudinal comparison
+
+```{r sekrn}
+qqPlot(sekrn$time_to_sunset)
+```
+
+```{r sekaa}
+qqPlot(sekaa$time_to_sunset)
+```
+
+```{r levene's test}
+leveneTest(time_to_sunset ~ radar, season_filter)
+```
+
+```{r wilcox radar}
+wilcox_radar <- wilcox.test(sekrn$time_to_sunset, sekaa$time_to_sunset, paired = FALSE, var.equal = TRUE, alternative = "two.sided", conf.int = TRUE, conf.level = 0.95)
+print(wilcox_radar)
+```
+
+```{r}
+leveneTest(time_to_sunset~radar, spring_season)
+```
+
+```{r}
+leveneTest(time_to_sunset~radar, fall_season)
+```
+
+```{r}
+wilcox_spring <- wilcox.test(spring_sekaa$time_to_sunset, spring_sekrn$time_to_sunset, paired = FALSE, var.equal = TRUE, alternative = "greater", conf.int = TRUE, conf.level = 0.95)
+print(wilcox_spring)
+```
+
+```{r}
+wilcox_fall <- wilcox.test(fall_sekrn$time_to_sunset, fall_sekaa$time_to_sunset, paired = FALSE, var.equal = TRUE, alternative = "greater", conf.int = TRUE, conf.level = 0.95)
+print(wilcox_fall)
+```
+
+```{r ggplot}
+ggplot(data = season_filter, aes(x = radar, y = time_to_sunset, fill = season)) +
+  stat_summary(fun.data="mean_sdl", fun.args = list(mult=1), 
+                 geom="errorbar", width=0.5, position = position_dodge(.75)) +
+  geom_boxplot() +
+  labs(x = "Radar", y = "Departure time after sunset (min)") +
+  theme(axis.title = element_text(size = 16), strip.text = element_text(size = 20), legend.text = element_text(size = 13), legend.title = element_text(size = 16))
+```
+
+```{r}
+confint(wilcox_radar)
+```
+
+```{r radar effect size}
+wilcox_effsize(data = season_filter, time_to_sunset~radar)
+```
+
+```{r radar springs effect size}
+wilcox_effsize(data = spring_season, time_to_sunset~radar)
+```
+
+```{r radar falls effect size}
+wilcox_effsize(data = fall_season, time_to_sunset~radar)
+```
+
+## Departure time vs night length
+
+```{r}
+#Departure time histogram
+ggplot(data = season_filter, aes(x = time_to_sunset )) + 
+  geom_histogram(binwidth = 5) +
+  labs(title = "Histogram of departure time", x = "Departure time", y = "Count")
+
+#Normality test
+shapiro.test(season_filter$time_to_sunset)
+#W = 0.77594, p-value = 0.0000000004035
+#Not normal
+```
+
+```{r}
+#Night length histogram 
+ggplot(data = season_filter, aes(x = night_length )) + 
+  geom_histogram(binwidth = 5) +
+  labs(title = "Histogram of night length", x = "Night length", y = "Count")
+
+#Normality test
+shapiro.test(season_filter$night_length)
+#Not normal W = 0.97296, p-value = 0.01017
+```
+
+```{r plot}
+ggplot(data = season_filter, aes(x = night_length, y = time_to_sunset)) + 
+  geom_point() +
+  labs(title = "Departure time vs night length", x = "Night length", y = "Departure time")
+```
+
+```{r linear regression}
+lm_night <- lm(formula = time_to_sunset~night_length, data = season_filter)
+qqPlot(lm_night)
+```
+
+```{r GAM}
+gam <- gam(time_to_sunset ~ s(night_length), data = season_filter, method = )
+summary(gam)
+
+#Family: gaussian 
+#Link function: identity 
+
+#Formula:
+#time_to_sunset ~ s(night_length)
+
+#Parametric coefficients:
+#            Estimate Std. Error t value        Pr(>|t|)    
+#(Intercept)    235.8       30.1   7.834 0.0000000000016 ***
+#---
+#Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+#Approximate significance of smooth terms:
+#                  edf Ref.df     F p-value   
+#s(night_length) 2.323  2.929 4.265 0.00577 **
+#---
+#Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+#R-sq.(adj) =  0.0871   Deviance explained = 10.3%
+#GCV = 1.2176e+05  Scale est. = 1.1867e+05  n = 131
+
+#Departure time significantly depends on night length! However weak correlation.
+```
+
+```{r Kendall}
+model.k = mblm(time_to_sunset ~ night_length,
+               data = season_filter)
+
+summary(model.k)
+confint(model.k)
+```
+
+```{r spring}
+model.k.spring = mblm(time_to_sunset ~ night_length,
+               data = spring_season)
+
+summary(model.k.spring)
+confint(model.k.spring)
+```
+
+```{r}
+model.k.fall = mblm(time_to_sunset ~ night_length,
+               data = fall_season)
+
+summary(model.k.fall)
+confint(model.k.fall)
+```
+
+```{r plot GAM}
+# Generate the random hp dataset for predictions
+new_gam <- data.frame(night_length = seq(min(season_filter$night_length), max(season_filter$night_length), 
+                                length.out = 100))
+predictions <- predict(gam, newdata = new_gam, type = "response", 
+                       se.fit = TRUE)
+
+# Plot the data and the GAM fit
+ggplot() +
+  geom_point(data = season_filter, aes(x = night_length, y = time_to_sunset)) +
+  geom_line(data = data.frame(night_length = new_gam$night_length, time_to_sunset = predictions$fit), 
+            aes(x = night_length, y = time_to_sunset), color = "blue", size = 1) +
+  geom_ribbon(data = data.frame(night_length = new_gam$night_length, fit = predictions$fit, 
+                                se = predictions$se.fit), aes(x = night_length, 
+                                ymin = fit - 1.96 * se, 
+                                ymax = fit + 1.96 * se), alpha = 0.3) +
+  labs(title = "GAM Fit for departure time vs. night length", 
+       x = "Night length (min)", y = "Departure time (min)") +
+  theme_minimal()
+#Better fit than the Kendall, and a bit weak correlation. So, results probably not as significant as p shows
+```
+
+```{r plot kendall}
+new_kendall <- data.frame(night_length = seq(min(season_filter$night_length), max(season_filter$night_length), 
+                                length.out = 207))
+predictions <- predict(model.k, newdata = new_kendall, type = "response", 
+                       se.fit = TRUE)
+
+# Plot the data and the kendall fit
+ggplot() +
+  geom_point(data = season_filter, aes(x = night_length, y = time_to_sunset, color = season)) +
+  geom_line(data = data.frame(night_length = new_kendall$night_length, time_to_sunset = predictions$fit), 
+            aes(x = night_length, y = time_to_sunset), color = "blue", size = 1) +
+  geom_ribbon(data = data.frame(night_length = new_kendall$night_length, fit = predictions$fit, 
+                                se = predictions$se.fit), aes(x = night_length, 
+                                ymin = fit - 1.96 * se, 
+                                ymax = fit + 1.96 * se), alpha = 0.3) +
+  labs( 
+       x = "Night length (min)", y = "Departure time after sunset (min)") +
+  theme_minimal() + theme(axis.title = element_text(size = 16), strip.text = element_text(size = 20), legend.text = element_text(size = 13), legend.title = element_text(size = 16))
+#Very weak correlation, so probably not as significant as the p shows
+```
+
+```{r}
+new_kendall_fall <- data.frame(night_length = seq(min(season_filter$night_length), max(fall_season$night_length), 
+                                length.out = 207))
+predictions <- predict(model.k, newdata = new_kendall_fall, type = "response", 
+                       se.fit = TRUE)
+
+# Plot the data and the kendall fit
+ggplot() +
+  geom_point(data = fall_season, aes(x = night_length, y = time_to_sunset, color = season)) +
+  geom_line(data = data.frame(night_length = new_kendall_fall$night_length, time_to_sunset = predictions$fit), 
+            aes(x = night_length, y = time_to_sunset), color = "blue", size = 1) +
+  geom_ribbon(data = data.frame(night_length = new_kendall_fall$night_length, fit = predictions$fit, 
+                                se = predictions$se.fit), aes(x = night_length, 
+                                ymin = fit - 1.96 * se, 
+                                ymax = fit + 1.96 * se), alpha = 0.3) +
+  labs(title = "Departure time vs. night length", 
+       x = "Night length (min)", y = "Departure time (min)") +
+  theme_minimal()
+```
+
+## Twilight period distribution vs season
+
+```{r chi square}
+chitest <- chisq.test(table(season_filter$season, season_filter$period))
+print(chitest)
+
+#Pearson's Chi-squared test
+
+#data:  table(season_filter$season, season_filter$period)
+#X-squared = 35.743, df = 4, p-value = 0.0000003268
+
+```
+
+```{r plot}
+ggplot(season_filter) +
+  aes(x = period, fill = season) +
+  geom_bar(position = "dodge")
+```
+
+```{r plot fill}
+ggplot(season_filter) +
+  aes(x = period, fill = season) +
+  geom_bar(position = "fill")
+```
+
+## Moon
+
+```{r kendall}
+model.k.moon = mblm(time_to_sunset ~ moonlightModel,
+               data = season_filter)
+
+summary(model.k.moon)
+confint(model.k.moon)
+```
+
+```{r}
+ggplot(data = season_filter, aes(x = moonlightModel, y = time_to_sunset)) + 
+  geom_point() +
+  labs(title = "Departure time vs moonlight intensity", x = "Moonlight intensity (lx)", y = "Departure time (min)")
+```
+
+```{r kendall plot}
+new_kendall_moon <- data.frame(moonlightModel = seq(min(season_filter$moonlightModel), max(season_filter$moonlightModel), 
+                                length.out = 207))
+
+
+###
+
+predictions_moon <- predict(model.k.moon, newdata = new_kendall_moon, type = "response", se.fit = TRUE)
+
+# Plot the data and the kendall fit
+ggplot() +
+  geom_point(data = season_filter, aes(x = moonlightModel, y = time_to_sunset, color = season)) +
+  geom_line(data = data.frame(moonlightModel = new_kendall_moon$moonlightModel, time_to_sunset = predictions_moon$fit), 
+            aes(x = moonlightModel, y = time_to_sunset), color = "blue", size = 1) +
+  geom_ribbon(data = data.frame(moonlightModel = new_kendall_moon$moonlightModel, fit = predictions_moon$fit, 
+                                se = predictions_moon$se.fit), aes(x = moonlightModel, 
+                                ymin = fit - 1.96 * se, 
+                                ymax = fit + 1.96 * se), alpha = 0.3) +
+  labs( 
+       x = "Moonlight illumination", y = "Departure time after sunset (min)") +
+  theme_minimal() + theme(axis.title = element_text(size = 16), strip.text = element_text(size = 20), legend.text = element_text(size = 13), legend.title = element_text(size = 16))
+```
+
+```{r linear regression}
+lm_moon <- lm(formula = time_to_sunset~moonlightModel, data = season_filter)
+qqPlot(lm_moon)
+```
+
+## Moon, night length vs departure time
+
+```{r}
+season_filter %>%
+  mutate(
+    time_to_sunset_mod = time_to_sunset+60
+  ) -> season_filter_mod
+```
+
+```{r}
+glm_departure <- glm(time_to_sunset_mod~night_length + moonlightModel + season*radar, family = Gamma(link = "log"), data = season_filter_mod)
+summary(glm_departure) 
+```
+
+```{r}
+gam.check(gam)
+```
+
+```{r}
+qqPlot(season_filter$time_to_sunset)
+```
+
+```{r}
+simulationOutput <- simulateResiduals(fittedModel = glm_departure)
+plot(simulationOutput)
+```
+
+## Night length comparison
+
+```{r spring comparison}
+wilcox_nightsprings <- wilcox.test(spring_sekaa$night_length, spring_sekrn$night_length, paired = FALSE, var.equal = TRUE, alternative = "two.sided", conf.int = TRUE, conf.level = 0.95)
+print(wilcox_nightsprings)
+```
+
+```{r}
+wilcox_nightskarlskrona <- wilcox.test(fall_sekaa$night_length, spring_sekaa$night_length, paired = FALSE, var.equal = TRUE, alternative = "two.sided", conf.int = TRUE, conf.level = 0.95)
+print(wilcox_nightskarlskrona)
+```
+
+```{r}
+wilcox_nightsradar <- wilcox.test(sekrn$night_length, sekaa$night_length, paired = FALSE, var.equal = TRUE, alternative = "two.sided", conf.int = TRUE, conf.level = 0.95)
+print(wilcox_nightsradar)
+```
